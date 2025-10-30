@@ -11,6 +11,7 @@ import pymunk.pygame_util
 
 import cv2
 import mediapipe as mp
+import numpy as np
 
 
 # --- CONFIG ---
@@ -23,8 +24,8 @@ GRAVITY_Y = 1600.0
 DENSITY = 0.0008
 
 FPS_CAP = 120                  # display cap
-DT_FIXED = 1.0 / 240.0         # smaller physics step
-SOLVER_ITER = 40               # more iterations
+SOLVER_ITER = 60            # was 40
+DT_FIXED = 1.0 / 300.0      # was 1/240         # more iterations
 GLOBAL_DAMPING = 0.99
 SLEEP_THRESHOLD = 0.3
 
@@ -39,11 +40,20 @@ CLAW_RADIUS = 18
 CLAW_COLOR_IDLE = (180, 200, 255)
 CLAW_COLOR_GRAB = (255, 200, 60)
 
+HAND_CONN = [
+    (0,1),(1,2),(2,3),(3,4),          # thumb
+    (0,5),(5,6),(6,7),(7,8),          # index
+    (0,9),(9,10),(10,11),(11,12),     # middle
+    (0,13),(13,14),(14,15),(15,16),   # ring
+    (0,17),(17,18),(18,19),(19,20),   # pinky
+    (5,9),(9,13),(13,17)              # palm crossbars (optional)
+]
+
 # Grabbing
 GRAB_MAX_DIST = 28
-GRAB_FORCE = 7.5e4
-SPRING_K = 2.0e3                # translational stiffness
-SPRING_C = 450.0                # damping
+GRAB_FORCE = 2.0e5          # was 7.5e4
+SPRING_K  = 8000.0          # was 2000
+SPRING_C  = 1200.0          # was 450              # damping
 
 # Camera panel
 CAM_MIRROR = True
@@ -52,14 +62,14 @@ CAM_H = 270
 CAM_POS = (12, 12)
 
 # Hand filtering and classification
-MAX_CLAW_SPEED = 2200.0         # px/s cap
-MAX_CLAW_ACC = 42000.0          # px/s^2 cap
+MAX_CLAW_SPEED = 3000.0     # was 2200
+MAX_CLAW_ACC   = 90000.0    # was 42000        # px/s^2 cap
 PINCH_CLOSE = 0.42              # hysteresis low
 PINCH_OPEN = 0.50               # hysteresis high
 HOLD_MISS_T = 0.08              # seconds to hold last valid hand
 MEDIAN_WIN = 5                  # frames
-OE_MINCUTOFF = 1.2              # One Euro position min cutoff
-OE_BETA = 0.02                  # One Euro speed coefficient
+OE_MINCUTOFF = .8               # One Euro position min cutoff
+OE_BETA = 0.05                  # One Euro speed coefficient
 OE_DCUTOFF = 1.0                # One Euro derivative cutoff
 
 
@@ -147,54 +157,112 @@ class HandTracker:
         ok, frame = self.cap.read()
         if not ok or frame is None:
             self.last_rgb = None
+            self.last_pairs = []
             self._last_seen_t += dt_frame
             present = self._last_seen_t <= HOLD_MISS_T
-            # Hold previous filtered position if within hold window
             x = self._euro_x._x_prev if self._euro_x._x_prev is not None else SCREEN_W / 2
             y = self._euro_y._x_prev if self._euro_y._x_prev is not None else 0.0
             return ClawInput(float(x), float(y), self._closed_state, present)
 
         if CAM_MIRROR:
             frame = cv2.flip(frame, 1)
+
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        rgb.flags.writeable = True
+        res = self.hands.process(rgb)
+
+        self.last_pairs = []
+        h, w, _ = rgb.shape
+
+        if res.multi_hand_landmarks:
+            lms = res.multi_hand_landmarks
+            hds = getattr(res, "multi_handedness", None)
+
+            for idx, lm in enumerate(lms):
+                label = None
+                if hds and len(hds) > idx and getattr(hds[idx], "classification", None):
+                    label = hds[idx].classification[0].label  # 'Left' or 'Right'
+
+                xs = np.fromiter((p.x for p in lm.landmark), dtype=np.float32, count=21)
+                ys = np.fromiter((p.y for p in lm.landmark), dtype=np.float32, count=21)
+
+                x_min, x_max = float(xs.min()), float(xs.max())
+                y_min, y_max = float(ys.min()), float(ys.max())
+                cx_n = 0.5 * (x_min + x_max)
+                cy_n = 0.5 * (y_min + y_max)
+
+                # Draw bones
+                for a, b in HAND_CONN:
+                    ax, ay = int(xs[a] * w), int(ys[a] * h)
+                    bx, by = int(xs[b] * w), int(ys[b] * h)
+                    cv2.line(rgb, (ax, ay), (bx, by), (80, 220, 255), 1, cv2.LINE_AA)
+
+                # Draw joints
+                for i in range(21):
+                    jx, jy = int(xs[i] * w), int(ys[i] * h)
+                    cv2.circle(rgb, (jx, jy), 2, (255, 230, 80), -1, cv2.LINE_AA)
+
+                # Bbox and label
+                x0, y0 = int(x_min * w), int(y_min * h)
+                x1, y1 = int(x_max * w), int(y_max * h)
+                cv2.rectangle(rgb, (x0, y0), (x1, y1), (255, 220, 80), 1, cv2.LINE_AA)
+                if label:
+                    cv2.putText(rgb, label, (x0, max(12, y0 - 6)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 220, 80), 1, cv2.LINE_AA)
+
+                self.last_pairs.append({
+                    "lm": lm,
+                    "cx": cx_n, "cy": cy_n,
+                    "x_min": x_min, "x_max": x_max,
+                    "y_min": y_min, "y_max": y_max,
+                    "label": label
+                })
+
+        # Choose control point (center of hand box; swap to fingertip if preferred)
+        if self.last_pairs:
+            cx_n = self.last_pairs[0]["cx"]
+            cy_n = self.last_pairs[0]["cy"]
+        else:
+            cx_n, cy_n = 0.5, 0.0
+
+        # Convert to screen space
+        cx = cx_n * SCREEN_W
+        cy = max(0.0, min(cy_n * SCREEN_H, SCREEN_H * 0.92))
+
+        # Store overlay for the camera panel
         self.last_rgb = rgb
 
-        res = self.hands.process(rgb)
-        if not res.multi_hand_landmarks:
-            self._last_seen_t += dt_frame
-            present = self._last_seen_t <= HOLD_MISS_T
-            x = self._euro_x._x_prev if self._euro_x._x_prev is not None else SCREEN_W / 2
-            y = self._euro_y._x_prev if self._euro_y._x_prev is not None else 0.0
-            return ClawInput(float(x), float(y), self._closed_state, present)
-
-        self._last_seen_t = 0.0
-        lm = res.multi_hand_landmarks[0].landmark
-        wrist, idx_tip, thm_tip, mid_mcp = lm[0], lm[8], lm[4], lm[9]
-
-        cx = idx_tip.x * SCREEN_W
-        cy = idx_tip.y * SCREEN_H
-        cy = max(0.0, min(cy, SCREEN_H * 0.92))
-
-        # median pre-filter
+        # Filtering
         self._median_x.append(cx)
         self._median_y.append(cy)
         mx = self._median(self._median_x)
         my = self._median(self._median_y)
-
-        # one euro filtering
         fx = self._euro_x.filter(mx, max(dt_frame, 1e-6))
         fy = self._euro_y.filter(my, max(dt_frame, 1e-6))
 
-        # hysteresis pinch
-        base = math.hypot(mid_mcp.x - wrist.x, mid_mcp.y - wrist.y) + 1e-6
-        pinch = math.hypot(thm_tip.x - idx_tip.x, thm_tip.y - idx_tip.y)
-        ratio = pinch / base
-        if self._closed_state:
-            self._closed_state = ratio < PINCH_OPEN
-        else:
-            self._closed_state = ratio < PINCH_CLOSE
+        # Pinch ratio for open/closed using landmarks, no drawing utils
+        ratio = None
+        if self.last_pairs:
+            lm0 = self.last_pairs[0]["lm"].landmark
+            wrist, idx_tip, thm_tip, mid_mcp = lm0[0], lm0[8], lm0[4], lm0[9]
+            base = math.hypot(mid_mcp.x - wrist.x, mid_mcp.y - wrist.y) + 1e-6
+            pinch = math.hypot(thm_tip.x - idx_tip.x, thm_tip.y - idx_tip.y)
+            ratio = pinch / base
 
-        return ClawInput(fx, fy, self._closed_state, True)
+        if ratio is None:
+            self._last_seen_t += dt_frame
+            present = self._last_seen_t <= HOLD_MISS_T
+        else:
+            self._last_seen_t = 0.0
+            if self._closed_state:
+                self._closed_state = ratio < PINCH_OPEN
+            else:
+                self._closed_state = ratio < PINCH_CLOSE
+
+        present = self._last_seen_t <= HOLD_MISS_T
+
+        return ClawInput(fx, fy, self._closed_state, present)
+
 
     def camera_surface(self) -> Optional[pygame.Surface]:
         if self.last_rgb is None:
@@ -296,7 +364,10 @@ class Claw:
         self.prev_pos = self.body.position
         self.prev_vel = pymunk.Vec2d(0.0, 0.0)
 
+        self.state_closed = False
+
     def update(self, inp: ClawInput, dt: float):
+        self.state_closed = bool(inp.present and inp.closed)
         # compute desired velocity with caps
         new_pos = pymunk.Vec2d(inp.x, inp.y)
         raw_vel = (new_pos - self.prev_pos) / max(dt, 1e-6)
@@ -386,7 +457,8 @@ def draw_buckets(screen: pygame.Surface):
 
 def draw_claw(screen: pygame.Surface, claw: Claw):
     x, y = claw.body.position
-    color = CLAW_COLOR_GRAB if claw.holding_pivot else CLAW_COLOR_IDLE
+    engaged = claw.holding_pivot or claw.state_closed
+    color = CLAW_COLOR_GRAB if engaged else CLAW_COLOR_IDLE
     pygame.draw.line(screen, (90, 90, 120), (int(x), 0), (int(x), int(y - CLAW_RADIUS)), 2)
     pygame.draw.circle(screen, color, (int(x), int(y)), CLAW_RADIUS, 2)
 
