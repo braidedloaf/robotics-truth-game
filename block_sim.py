@@ -21,7 +21,10 @@ BG_COLOR = (18, 18, 20)
 FLOOR_Y = SCREEN_H - 60
 
 GRAVITY_Y = 1600.0
+
 DENSITY = 0.0008
+W_RANGE = (40, 100)
+H_RANGE = (40, 100)
 
 FPS_CAP = 120                  # display cap
 SOLVER_ITER = 60            # was 40
@@ -29,7 +32,7 @@ DT_FIXED = 1.0 / 300.0      # was 1/240         # more iterations
 GLOBAL_DAMPING = 0.99
 SLEEP_THRESHOLD = 0.3
 
-SPAWN_BURST = 7
+SPAWN_BURST = 10
 
 BUCKET_W = SCREEN_W // 6
 BUCKET_H = SCREEN_H // 2
@@ -53,13 +56,22 @@ HAND_CONN = [
 GRAB_MAX_DIST = 28
 GRAB_FORCE = 2.0e5          # was 7.5e4
 SPRING_K  = 8000.0          # was 2000
-SPRING_C  = 1200.0          # was 450              # damping
+SPRING_C  = 1200.0          # was 450
 
 # Camera panel
 CAM_MIRROR = True
 CAM_W = 480
 CAM_H = 270
 CAM_POS = (12, 12)
+
+CAM_PAD = 12
+FLIP_HYSTERESIS = 24  # pixels to prevent flicker
+
+CAM_LEFT = True  # True = top-left, False = top-right
+
+# Input cropping: percent of camera frame ignored on each side
+EDGE_MARGIN_X = 0.15   # 0.10–0.20 works well
+EDGE_MARGIN_Y = 0.10
 
 # Hand filtering and classification
 MAX_CLAW_SPEED = 3000.0     # was 2200
@@ -113,6 +125,48 @@ class ClawInput:
     y: float
     closed: bool
     present: bool
+
+def setup_mass_profile():
+    global DENSITY, W_RANGE, H_RANGE
+
+    # Randomize size ranges each run
+    wmin = random.randint(36, 64)
+    wmax = random.randint(96, 140)
+    hmin = random.randint(36, 64)
+    hmax = random.randint(96, 140)
+    W_RANGE = (wmin, wmax)
+    H_RANGE = (hmin, hmax)
+
+    # Choose a target max mass for this run (kg)
+    M_max_run = random.uniform(6.0, 18.0)
+
+    # Derive density so the largest possible block hits that max mass
+    A_max = wmax * hmax
+    DENSITY = M_max_run / A_max  # kg per px^2
+
+    # Compute implied average for HUD
+    Ew = 0.5 * (wmin + wmax)
+    Eh = 0.5 * (hmin + hmax)
+    E_area = Ew * Eh
+    E_mass = DENSITY * E_area
+    return {
+        "w_range": W_RANGE, "h_range": H_RANGE,
+        "max_mass": M_max_run, "avg_mass": E_mass,
+        "density": DENSITY
+    }
+
+def _crop_map(n, lo, hi):
+    """
+    Map normalized n in [0,1] using a crop [lo, 1-hi] back to [0,1].
+    Values outside crop clamp to edges.
+    """
+    lo = max(0.0, min(0.49, lo))
+    hi = max(0.0, min(0.49, hi))
+    span = 1.0 - lo - hi
+    if span <= 1e-6:
+        return 0.5  # degenerate safety
+    n = (n - lo) / span
+    return 0.0 if n < 0.0 else 1.0 if n > 1.0 else n
 
 
 class HandTracker:
@@ -225,7 +279,10 @@ class HandTracker:
         else:
             cx_n, cy_n = 0.5, 0.0
 
-        # Convert to screen space
+        cx_n = _crop_map(cx_n, EDGE_MARGIN_X, EDGE_MARGIN_X)
+        cy_n = _crop_map(cy_n, EDGE_MARGIN_Y, EDGE_MARGIN_Y)
+
+        # Convert to screen coordinates
         cx = cx_n * SCREEN_W
         cy = max(0.0, min(cy_n * SCREEN_H, SCREEN_H * 0.92))
 
@@ -326,7 +383,7 @@ class PhysicsSim:
         make_bucket(SCREEN_W - BUCKET_W - pad)
 
     def add_box(self, x, y, w, h):
-        mass = max(1.0, DENSITY * w * h)
+        mass = DENSITY * w * h
         moment = pymunk.moment_for_box(mass, (w, h))
         body = pymunk.Body(mass, moment)
         body.position = x, y
@@ -342,6 +399,19 @@ class PhysicsSim:
         self.space.add(body, shape)
         self.blocks.append(shape)
         return shape
+
+    def clear_boxes(self):
+        # bodies to delete
+        target_bodies = {s.body for s in self.blocks}
+        # remove constraints touching those bodies
+        for c in list(self.space.constraints):
+            if c.a in target_bodies or c.b in target_bodies:
+                self.space.remove(c)
+        # remove shapes and bodies
+        for s in list(self.blocks):
+            if s in self.space.shapes:
+                self.space.remove(s, s.body)
+        self.blocks.clear()
 
 
 # --- CLAW ---
@@ -434,12 +504,16 @@ class Claw:
 
 
 # --- SPAWNING ---
-def spawn_blocks(sim: PhysicsSim, n: int):
+def spawn_blocks(sim, n: int):
+    wmin, wmax = W_RANGE
+    hmin, hmax = H_RANGE
     for _ in range(n):
-        w, h = random.randint(40, 100), random.randint(40, 100)
-        x = random.uniform(120, SCREEN_W - 120)
+        w = random.uniform(wmin, wmax)
+        h = random.uniform(hmin, hmax)
+        x = random.uniform(BUCKET_W + w // 2, SCREEN_W - BUCKET_W - w)
         y = random.uniform(-120, -20)
         sim.add_box(x, y, w, h)
+
 
 
 # --- DRAWING ---
@@ -473,13 +547,22 @@ def draw_weight(screen: pygame.Surface, font: pygame.font.Font, claw: Claw):
     screen.blit(label, (int(bx) + 14, int(by) - 26))
 
 
-def draw_camera_panel(screen: pygame.Surface, tracker: HandTracker):
-    surf = tracker.camera_surface()
-    rect = pygame.Rect(CAM_POS[0] - 4, CAM_POS[1] - 4, CAM_W + 8, CAM_H + 8)
+def draw_camera_panel(screen: pygame.Surface, tracker: HandTracker, pos: tuple[int, int]):
+    x, y = pos
+    rect = pygame.Rect(x - 4, y - 4, CAM_W + 8, CAM_H + 8)
     pygame.draw.rect(screen, (40, 40, 48), rect, border_radius=6)
+    surf = tracker.camera_surface()
     if surf:
-        screen.blit(surf, CAM_POS)
+        screen.blit(surf, (x, y))
     pygame.draw.rect(screen, (80, 80, 96), rect, width=2, border_radius=6)
+
+def reset_sim(sim: PhysicsSim):
+    sim.clear_boxes()
+    profile = setup_mass_profile()
+    print(
+        f"[run] density={profile['density']:.6f}  avg≈{profile['avg_mass']:.2f} kg  max={profile['max_mass']:.2f} kg  "
+        f"W∈{profile['w_range']} H∈{profile['h_range']}")
+    spawn_blocks(sim, SPAWN_BURST)
 
 
 # --- MAIN ---
@@ -499,6 +582,12 @@ def main():
 
     running = True
     acc = 0.0
+
+    profile = setup_mass_profile()
+    print(
+        f"[run] density={profile['density']:.6f}  avg≈{profile['avg_mass']:.2f} kg  max={profile['max_mass']:.2f} kg  "
+        f"W∈{profile['w_range']} H∈{profile['h_range']}")
+
     while running:
         dt_frame = clock.tick(FPS_CAP) / 1000.0
         acc += dt_frame
@@ -511,6 +600,12 @@ def main():
                     running = False
                 elif e.key == pygame.K_SPACE:
                     spawn_blocks(sim, SPAWN_BURST)
+                elif e.key == pygame.K_c:
+                    sim.clear_boxes()
+                elif e.key == pygame.K_r:
+                    reset_sim(sim)
+
+
 
         inp = tracker.read(dt_frame)
         claw.update(inp, max(dt_frame, 1e-6))
@@ -519,13 +614,34 @@ def main():
             sim.space.step(DT_FIXED)
             acc -= DT_FIXED
 
+        # Flip camera panel if claw overlaps the current top corner
+        cx = float(claw.body.position.x)
+
+        global CAM_LEFT
+        if CAM_LEFT:
+            # panel spans x in [CAM_PAD, CAM_PAD + CAM_W]
+            if cx <= CAM_PAD + CAM_W + FLIP_HYSTERESIS:
+                CAM_LEFT = False
+        else:
+            # panel spans x in [SCREEN_W - CAM_PAD - CAM_W, SCREEN_W - CAM_PAD]
+            if cx >= SCREEN_W - CAM_PAD - CAM_W - FLIP_HYSTERESIS:
+                CAM_LEFT = True
+
+        cam_x = CAM_PAD if CAM_LEFT else (SCREEN_W - CAM_PAD - CAM_W)
+        cam_y = CAM_PAD
+
         screen.fill(BG_COLOR)
         pygame.draw.rect(screen, (28, 28, 32), (0, FLOOR_Y, SCREEN_W, SCREEN_H - FLOOR_Y))
         sim.space.debug_draw(draw_opts)
         draw_buckets(screen)
         draw_claw(screen, claw)
         draw_weight(screen, font, claw)
-        draw_camera_panel(screen, tracker)
+        draw_camera_panel(screen, tracker, (cam_x, cam_y))
+
+
+        # in HUD draw
+        hud2 = font.render(f"avg≈{profile['avg_mass']:.2f}kg  max={profile['max_mass']:.1f}kg", True, (180, 180, 190))
+        screen.blit(hud2, (12, SCREEN_H - 56))
 
         fps_txt = font.render(f"fps {clock.get_fps():5.1f}", True, (200, 200, 210))
         screen.blit(fps_txt, (12, SCREEN_H - 32))
@@ -534,7 +650,3 @@ def main():
 
     tracker.stop()
     pygame.quit()
-
-
-# if __name__ == "__main__":
-#     main()
