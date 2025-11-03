@@ -32,7 +32,7 @@ DT_FIXED = 1.0 / 300.0      # was 1/240         # more iterations
 GLOBAL_DAMPING = 0.99
 SLEEP_THRESHOLD = 0.3
 
-SPAWN_BURST = 10
+SPAWN_BURST = 5
 
 BUCKET_W = SCREEN_W // 6
 BUCKET_H = SCREEN_H // 2
@@ -67,6 +67,11 @@ CAM_POS = (12, 12)
 CAM_PAD = 12
 FLIP_HYSTERESIS = 24  # pixels to prevent flicker
 
+PAD = 40
+CEILING_Y = -200
+
+
+
 CAM_LEFT = True  # True = top-left, False = top-right
 
 # Input cropping: percent of camera frame ignored on each side
@@ -76,8 +81,8 @@ EDGE_MARGIN_Y = 0.10
 # Hand filtering and classification
 MAX_CLAW_SPEED = 3000.0     # was 2200
 MAX_CLAW_ACC   = 90000.0    # was 42000        # px/s^2 cap
-PINCH_CLOSE = 0.42              # hysteresis low
-PINCH_OPEN = 0.50               # hysteresis high
+PINCH_CLOSE = 0.55              # hysteresis low
+PINCH_OPEN = 0.65               # hysteresis high
 HOLD_MISS_T = 0.08              # seconds to hold last valid hand
 MEDIAN_WIN = 5                  # frames
 OE_MINCUTOFF = .8               # One Euro position min cutoff
@@ -353,9 +358,14 @@ class PhysicsSim:
     def _add_bounds(self):
         sb = self.space.static_body
         segs = [
-            pymunk.Segment(sb, (0, FLOOR_Y), (SCREEN_W, FLOOR_Y), 6),
-            pymunk.Segment(sb, (0, 0), (0, FLOOR_Y), 6),
-            pymunk.Segment(sb, (SCREEN_W, 0), (SCREEN_W, FLOOR_Y), 6),
+            # floor
+            pymunk.Segment(sb, (PAD, FLOOR_Y), (SCREEN_W - PAD, FLOOR_Y), 6),
+            # left wall (extend to ceiling)
+            pymunk.Segment(sb, (PAD, CEILING_Y), (PAD, FLOOR_Y), 6),
+            # right wall (extend to ceiling)
+            pymunk.Segment(sb, (SCREEN_W - PAD, CEILING_Y), (SCREEN_W - PAD, FLOOR_Y), 6),
+            # ceiling (off-screen)
+            pymunk.Segment(sb, (PAD, CEILING_Y), (SCREEN_W - PAD, CEILING_Y), 6),
         ]
         for s in segs:
             s.friction = 0.98
@@ -503,6 +513,35 @@ class Claw:
         self.holding_shape = None
 
 
+def sorting_status(sim: PhysicsSim, profile) -> tuple[bool, float, int, int, int]:
+    """
+    Returns: all_in, pct_correct, correct, total, in_buckets
+    """
+    left, right = bucket_rects()
+    total = len(sim.blocks)
+    in_buckets = 0
+    correct = 0
+
+    for shp in sim.blocks:
+        x, y = shp.body.position
+        side = None
+        if left.collidepoint(int(x), int(y)):
+            side = "T"
+        elif right.collidepoint(int(x), int(y)):
+            side = "F"
+        else:
+            continue  # not parked in a bucket yet
+
+        in_buckets += 1
+        mass = shp.body.mass
+        should = "F" if mass < profile["avg_mass"] else "T"
+        if side == should:
+            correct += 1
+
+    all_in = (in_buckets == total) and total > 0
+    pct = (correct / total * 100.0) if total > 0 else 0.0
+    return all_in, pct, correct, total, in_buckets
+
 # --- SPAWNING ---
 def spawn_blocks(sim, n: int):
     wmin, wmax = W_RANGE
@@ -515,18 +554,25 @@ def spawn_blocks(sim, n: int):
         sim.add_box(x, y, w, h)
 
 
-
 # --- DRAWING ---
-def draw_buckets(screen: pygame.Surface):
+def draw_buckets(screen: pygame.Surface, profile):
     font = pygame.font.SysFont("consolas", 96)
     left = pygame.Rect(40, FLOOR_Y - BUCKET_H, BUCKET_W, BUCKET_H)
     right = pygame.Rect(SCREEN_W - BUCKET_W - 40, FLOOR_Y - BUCKET_H, BUCKET_W, BUCKET_H)
     pygame.draw.rect(screen, (60, 60, 80), left, 2)
     pygame.draw.rect(screen, (60, 60, 80), right, 2)
-    t_surf = font.render("T", True, (220, 220, 240))
-    f_surf = font.render("F", True, (220, 220, 240))
+    t_surf = font.render(f'T', True, (220, 220, 240))
+    f_surf = font.render(f'F', True, (220, 220, 240))
+
+    font = pygame.font.SysFont("consolas", 48)
+    tn_surf = font.render(f"> {profile['avg_mass']:.2f}", True, (220, 220, 240))
+    fn_surf = font.render(f"< {profile['avg_mass']:.2f}", True, (220, 220, 240))
+
     screen.blit(t_surf, (left.centerx - t_surf.get_width() // 2, left.top + 50))
     screen.blit(f_surf, (right.centerx - f_surf.get_width() // 2, right.top + 50))
+
+    screen.blit(tn_surf, (left.centerx - tn_surf.get_width() // 2, left.top + 150))
+    screen.blit(fn_surf, (right.centerx - fn_surf.get_width() // 2, right.top + 150))
 
 
 def draw_claw(screen: pygame.Surface, claw: Claw):
@@ -542,9 +588,9 @@ def draw_weight(screen: pygame.Surface, font: pygame.font.Font, claw: Claw):
         return
     shp = claw.holding_shape
     m = shp.body.mass
-    bx, by = shp.body.position
-    label = font.render(f"{m:.1f} kg", True, (255, 240, 150))
-    screen.blit(label, (int(bx) + 14, int(by) - 26))
+    bx, by = claw.body.position
+    label = font.render(f"{m:.2f} kg", True, (255, 240, 150))
+    screen.blit(label, (int(bx) + 26, int(by) - 40))
 
 
 def draw_camera_panel(screen: pygame.Surface, tracker: HandTracker, pos: tuple[int, int]):
@@ -556,6 +602,11 @@ def draw_camera_panel(screen: pygame.Surface, tracker: HandTracker, pos: tuple[i
         screen.blit(surf, (x, y))
     pygame.draw.rect(screen, (80, 80, 96), rect, width=2, border_radius=6)
 
+def bucket_rects() -> tuple[pygame.Rect, pygame.Rect]:
+    left  = pygame.Rect(40, FLOOR_Y - BUCKET_H, BUCKET_W, BUCKET_H)
+    right = pygame.Rect(SCREEN_W - BUCKET_W - 40, FLOOR_Y - BUCKET_H, BUCKET_W, BUCKET_H)
+    return left, right
+
 def reset_sim(sim: PhysicsSim):
     sim.clear_boxes()
     profile = setup_mass_profile()
@@ -564,8 +615,9 @@ def reset_sim(sim: PhysicsSim):
         f"W∈{profile['w_range']} H∈{profile['h_range']}")
     spawn_blocks(sim, SPAWN_BURST)
 
+    return profile
 
-# --- MAIN ---
+
 def main():
     pygame.init()
     screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
@@ -578,15 +630,11 @@ def main():
     tracker = HandTracker()
     draw_opts = pymunk.pygame_util.DrawOptions(screen)
 
-    spawn_blocks(sim, 14)
 
     running = True
     acc = 0.0
 
-    profile = setup_mass_profile()
-    print(
-        f"[run] density={profile['density']:.6f}  avg≈{profile['avg_mass']:.2f} kg  max={profile['max_mass']:.2f} kg  "
-        f"W∈{profile['w_range']} H∈{profile['h_range']}")
+    profile = reset_sim(sim)
 
     while running:
         dt_frame = clock.tick(FPS_CAP) / 1000.0
@@ -603,7 +651,7 @@ def main():
                 elif e.key == pygame.K_c:
                     sim.clear_boxes()
                 elif e.key == pygame.K_r:
-                    reset_sim(sim)
+                    profile = reset_sim(sim)
 
 
 
@@ -633,7 +681,7 @@ def main():
         screen.fill(BG_COLOR)
         pygame.draw.rect(screen, (28, 28, 32), (0, FLOOR_Y, SCREEN_W, SCREEN_H - FLOOR_Y))
         sim.space.debug_draw(draw_opts)
-        draw_buckets(screen)
+        draw_buckets(screen, profile)
         draw_claw(screen, claw)
         draw_weight(screen, font, claw)
         draw_camera_panel(screen, tracker, (cam_x, cam_y))
@@ -645,6 +693,19 @@ def main():
 
         fps_txt = font.render(f"fps {clock.get_fps():5.1f}", True, (200, 200, 210))
         screen.blit(fps_txt, (12, SCREEN_H - 32))
+
+        all_in, pct, correct, total, in_buckets = sorting_status(sim, profile)
+
+        # Always show progress; if all parked, show final score prominently
+        score_font = pygame.font.SysFont("consolas", 28)
+        if all_in:
+            msg = f"Sorted correctly: {pct:.0f}%  ({correct}/{total})"
+            surf = score_font.render(msg, True, (190, 255, 190))
+            screen.blit(surf, (SCREEN_W // 2 - surf.get_width() // 2, 16))
+        else:
+            msg = f"In buckets: {in_buckets}/{total}"
+            surf = score_font.render(msg, True, (180, 180, 190))
+            screen.blit(surf, (SCREEN_W // 2 - surf.get_width() // 2, 16))
 
         pygame.display.flip()
 
