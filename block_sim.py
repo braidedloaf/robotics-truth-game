@@ -32,7 +32,7 @@ DT_FIXED = 1.0 / 300.0      # was 1/240         # more iterations
 GLOBAL_DAMPING = 0.99
 SLEEP_THRESHOLD = 0.3
 
-SPAWN_BURST = 5
+SPAWN_BURST = 15
 
 BUCKET_W = SCREEN_W // 6
 BUCKET_H = SCREEN_H // 2
@@ -51,6 +51,8 @@ HAND_CONN = [
     (0,17),(17,18),(18,19),(19,20),   # pinky
     (5,9),(9,13),(13,17)              # palm crossbars (optional)
 ]
+
+
 
 # Grabbing
 GRAB_MAX_DIST = 28
@@ -555,6 +557,11 @@ def spawn_blocks(sim, n: int):
 
 
 # --- DRAWING ---
+def _fmt_ms(ms: int) -> str:
+    s, ms = divmod(ms, 1000)
+    m, s = divmod(s, 60)
+    return f"{m:02d}:{s:02d}.{ms:03d}"
+
 def draw_buckets(screen: pygame.Surface, profile):
     font = pygame.font.SysFont("consolas", 96)
     left = pygame.Rect(40, FLOOR_Y - BUCKET_H, BUCKET_W, BUCKET_H)
@@ -565,8 +572,8 @@ def draw_buckets(screen: pygame.Surface, profile):
     f_surf = font.render(f'F', True, (220, 220, 240))
 
     font = pygame.font.SysFont("consolas", 48)
-    tn_surf = font.render(f"> {profile['avg_mass']:.2f}", True, (220, 220, 240))
-    fn_surf = font.render(f"< {profile['avg_mass']:.2f}", True, (220, 220, 240))
+    tn_surf = font.render(f"> {profile['avg_mass']:.2f} kg", True, (220, 220, 240))
+    fn_surf = font.render(f"< {profile['avg_mass']:.2f} kg", True, (220, 220, 240))
 
     screen.blit(t_surf, (left.centerx - t_surf.get_width() // 2, left.top + 50))
     screen.blit(f_surf, (right.centerx - f_surf.get_width() // 2, right.top + 50))
@@ -630,6 +637,10 @@ def main():
     tracker = HandTracker()
     draw_opts = pymunk.pygame_util.DrawOptions(screen)
 
+    # Timer
+    timer_running = True
+    timer_start_ms = pygame.time.get_ticks()
+    final_time_ms = None
 
     running = True
     acc = 0.0
@@ -652,8 +663,9 @@ def main():
                     sim.clear_boxes()
                 elif e.key == pygame.K_r:
                     profile = reset_sim(sim)
-
-
+                    timer_running = True
+                    timer_start_ms = pygame.time.get_ticks()
+                    final_time_ms = None
 
         inp = tracker.read(dt_frame)
         claw.update(inp, max(dt_frame, 1e-6))
@@ -694,18 +706,30 @@ def main():
         fps_txt = font.render(f"fps {clock.get_fps():5.1f}", True, (200, 200, 210))
         screen.blit(fps_txt, (12, SCREEN_H - 32))
 
+        # Score/progress
         all_in, pct, correct, total, in_buckets = sorting_status(sim, profile)
-
-        # Always show progress; if all parked, show final score prominently
         score_font = pygame.font.SysFont("consolas", 28)
-        if all_in:
-            msg = f"Sorted correctly: {pct:.0f}%  ({correct}/{total})"
-            surf = score_font.render(msg, True, (190, 255, 190))
-            screen.blit(surf, (SCREEN_W // 2 - surf.get_width() // 2, 16))
-        else:
-            msg = f"In buckets: {in_buckets}/{total}"
-            surf = score_font.render(msg, True, (180, 180, 190))
-            screen.blit(surf, (SCREEN_W // 2 - surf.get_width() // 2, 16))
+        line = f"Sorted correctly: {pct:.0f}%  ({correct}/{total})" if all_in else f"In buckets: {in_buckets}/{total}"
+        score_surf = score_font.render(line, True, (190, 255, 190) if all_in else (180, 180, 190))
+        score_x = SCREEN_W // 2 - score_surf.get_width() // 2
+        score_y = 16
+        screen.blit(score_surf, (score_x, score_y))
+
+        if timer_running and all_in:
+            final_time_ms = pygame.time.get_ticks() - timer_start_ms
+            timer_running = False
+
+        # Timer under the amount-correct line
+        now_ms = pygame.time.get_ticks()
+        elapsed_ms = final_time_ms if final_time_ms is not None else (now_ms - timer_start_ms)
+        timer_text = f"time {_fmt_ms(int(elapsed_ms))}s"
+        timer_font = pygame.font.SysFont("consolas", 22)
+        timer_surf = timer_font.render(timer_text, True, (200, 200, 210))
+        timer_x = SCREEN_W // 2 - timer_surf.get_width() // 2
+        timer_y = score_y + score_surf.get_height() + 6
+        screen.blit(timer_surf, (timer_x, timer_y))
+
+
 
         pygame.display.flip()
 
