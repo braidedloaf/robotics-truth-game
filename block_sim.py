@@ -201,6 +201,23 @@ def _crop_map(n, lo, hi):
     n = (n - lo) / span
     return 0.0 if n < 0.0 else 1.0 if n > 1.0 else n
 
+def trigger_color_flash(sim: "PhysicsSim", shape: pymunk.Shape, rgb: tuple[int,int,int], duration_ms: int = 300):
+    now = pygame.time.get_ticks()
+    # Remember original color only the first time
+    if shape not in sim._orig_color:
+        sim._orig_color[shape] = shape.color
+    shape.color = (*rgb, 255)                # fill the whole block with this color
+    sim._flash_expire[shape] = now + duration_ms
+
+def update_color_flashes(sim: "PhysicsSim"):
+    now = pygame.time.get_ticks()
+    for shp, t_exp in list(sim._flash_expire.items()):
+        if now >= t_exp:
+            # restore original color
+            orig = sim._orig_color.get(shp)
+            if orig is not None:
+                shp.color = orig
+            del sim._flash_expire[shp]
 
 class HandTracker:
     """
@@ -383,6 +400,10 @@ class PhysicsSim:
         self._add_bounds()
         self._add_buckets()
 
+        self.block_in_bucket: dict[pymunk.Shape, str | None] = {}
+        self._flash_expire: dict[pymunk.Shape, int] = {}  # shape -> expire_ms
+        self._orig_color: dict[pymunk.Shape, tuple[int, int, int, int]] = {}  # shape -> RGBA
+
     def _add_bounds(self):
         sb = self.space.static_body
         segs = [
@@ -459,6 +480,8 @@ class PhysicsSim:
         )
         self.space.add(body, shape)
         self.blocks.append(shape)
+        self.block_in_bucket[shape] = None
+        self._orig_color[shape] = shape.color
         return shape
 
     def clear_boxes(self):
@@ -562,6 +585,7 @@ class Claw:
         self.holding_pivot = None
         self.holding_spring = None
         self.holding_shape = None
+
 
 
 def sorting_status(sim: PhysicsSim, profile) -> tuple[bool, float, int, int, int]:
@@ -903,6 +927,32 @@ def main():
         while acc >= DT_FIXED:
             sim.space.step(DT_FIXED)
             acc -= DT_FIXED
+
+        update_color_flashes(sim)
+
+        left, right = bucket_rects()
+        for shp in list(sim.blocks):
+            x, y = shp.body.position
+            prev_state = sim.block_in_bucket.get(shp)
+
+            # Which bucket (if any) is the center in?
+            new_state = None
+            if left.collidepoint(int(x), int(y)):
+                new_state = "T"
+            elif right.collidepoint(int(x), int(y)):
+                new_state = "F"
+
+            if new_state and new_state != prev_state:
+                sim.block_in_bucket[shp] = new_state
+                mass = shp.body.mass
+                should = "F" if mass < profile["avg_mass"] else "T"
+                if new_state == should:
+                    trigger_color_flash(sim, shp, (60, 220, 90))  # GREEN fill
+                else:
+                    trigger_color_flash(sim, shp, (230, 60, 60))  # RED fill
+
+            elif new_state is None and prev_state is not None:
+                sim.block_in_bucket[shp] = None
 
         # scoring and timer stop condition
         all_in, pct, correct, total, in_buckets = sorting_status(sim, profile)
