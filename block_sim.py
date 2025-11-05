@@ -13,10 +13,12 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
+pygame.mixer.pre_init(44100, -16, 2, 256)
+pygame.init()
 
 # --- CONFIG ---
-SCREEN_W = 1920
-SCREEN_H = 1080
+SCREEN_W = 1360
+SCREEN_H = 768
 BG_COLOR = (18, 18, 20)
 FLOOR_Y = SCREEN_H - 60
 
@@ -64,6 +66,8 @@ CAM_W = 480
 CAM_H = 270
 CAM_POS = (12, 12)
 
+CAM_IDX = 0
+
 CAM_PAD = 12
 FLIP_HYSTERESIS = 24  # pixels to prevent flicker
 
@@ -79,8 +83,8 @@ EDGE_MARGIN_Y = 0.10
 # Hand filtering and classification
 MAX_CLAW_SPEED = 3000.0     # was 2200
 MAX_CLAW_ACC   = 90000.0    # was 42000        # px/s^2 cap
-PINCH_CLOSE = 0.55              # hysteresis low
-PINCH_OPEN = 0.65               # hysteresis high
+PINCH_CLOSE = 0.35
+PINCH_OPEN = 0.45
 HOLD_MISS_T = 0.08              # seconds to hold last valid hand
 MEDIAN_WIN = 5                  # frames
 OE_MINCUTOFF = .8               # One Euro position min cutoff
@@ -229,8 +233,8 @@ class HandTracker:
         self.cap = cv2.VideoCapture(cam_index)
         if not self.cap.isOpened():
             raise RuntimeError("Camera not found or cannot be opened.")
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 270)
         fourcc = cv2.VideoWriter_fourcc(*"MJPG")
         self.cap.set(cv2.CAP_PROP_FOURCC, fourcc)
 
@@ -472,10 +476,11 @@ class PhysicsSim:
         shape = pymunk.Poly.create_box(body, (w, h))
         shape.friction = 0.9
         shape.elasticity = 0.0
+        base = random.randint(0, 110)  # allows full black at the low end
         shape.color = (
-            random.randint(110, 230),
-            random.randint(110, 230),
-            random.randint(110, 230),
+            base,
+            base,
+            min(255, base + random.randint(20, 100)),  # blue accent
             255,
         )
         self.space.add(body, shape)
@@ -772,7 +777,6 @@ def main():
             return n
 
     # --- init ---
-    pygame.init()
     screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
     pygame.display.set_caption("Blocks + Buckets + Camera Claw")
     clock = pygame.time.Clock()
@@ -781,7 +785,7 @@ def main():
 
     sim = PhysicsSim()
     claw = Claw(sim.space)
-    tracker = HandTracker()
+    tracker = HandTracker(CAM_IDX)
     draw_opts = pymunk.pygame_util.DrawOptions(screen)
 
     # --- game state ---
@@ -928,6 +932,21 @@ def main():
             sim.space.step(DT_FIXED)
             acc -= DT_FIXED
 
+        cx = float(claw.body.position.x)
+
+        global CAM_LEFT
+        if CAM_LEFT:
+            # left panel spans x in [CAM_PAD, CAM_PAD + CAM_W]
+            if cx <= CAM_PAD + CAM_W + FLIP_HYSTERESIS:
+                CAM_LEFT = False
+        else:
+            # right panel spans x in [SCREEN_W - CAM_PAD - CAM_W, SCREEN_W - CAM_PAD]
+            if cx >= SCREEN_W - CAM_PAD - CAM_W - FLIP_HYSTERESIS:
+                CAM_LEFT = True
+
+        cam_x = CAM_PAD if CAM_LEFT else (SCREEN_W - CAM_PAD - CAM_W)
+        cam_y = CAM_PAD
+
         update_color_flashes(sim)
 
         left, right = bucket_rects()
@@ -947,7 +966,7 @@ def main():
                 mass = shp.body.mass
                 should = "F" if mass < profile["avg_mass"] else "T"
                 if new_state == should:
-                    trigger_color_flash(sim, shp, (60, 220, 90))  # GREEN fill
+                    trigger_color_flash(sim, shp, (60, 250, 90))  # GREEN fill
                 else:
                     trigger_color_flash(sim, shp, (230, 60, 60))  # RED fill
 
@@ -967,7 +986,7 @@ def main():
         draw_buckets(screen, profile)         # if your draw_buckets expects profile
         draw_claw(screen, claw)
         draw_weight(screen, font, claw)
-        draw_camera_panel(screen, tracker, (12, 12))  # or your dynamic placement
+        draw_camera_panel(screen, tracker, (cam_x, cam_y))  # or your dynamic placement
 
         # banner: progress or final score
         line = (f"Sorted correctly: {pct:.0f}%  ({correct}/{total})" if all_in
