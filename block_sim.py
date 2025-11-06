@@ -1,5 +1,6 @@
 # --- IMPORTS ---
 import math
+import os.path
 import random
 from collections import deque
 from dataclasses import dataclass
@@ -108,6 +109,9 @@ MENU_BTN_H = 90
 MENU_BTN_GAP = 24
 MENU_SELECT_COOLDOWN = 0.40  # seconds debounce after a pinch-select
 
+SND_CLICK = pygame.mixer.Sound(os.path.join("assets", "menu_click.ogg"))
+SND_CORRECT = pygame.mixer.Sound(os.path.join("assets", "correct.wav"))
+SND_INCORRECT = pygame.mixer.Sound(os.path.join("assets", "incorrect.wav"))
 
 # --- UTIL: One Euro Filter ---
 class OneEuro:
@@ -891,6 +895,7 @@ def main():
 
             # on pick: set difficulty, reset run, and start initial wave
             if chosen_idx is not None:
+                SND_CLICK.play()
                 name, initial_count = DIFFICULTIES[chosen_idx]
                 current_difficulty_name = name
                 current_initial_count = initial_count
@@ -967,8 +972,10 @@ def main():
                 should = "F" if mass < profile["avg_mass"] else "T"
                 if new_state == should:
                     trigger_color_flash(sim, shp, (60, 250, 90))  # GREEN fill
+                    SND_CORRECT.play()
                 else:
                     trigger_color_flash(sim, shp, (230, 60, 60))  # RED fill
+                    SND_INCORRECT.play()
 
             elif new_state is None and prev_state is not None:
                 sim.block_in_bucket[shp] = None
