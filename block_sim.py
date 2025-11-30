@@ -29,9 +29,9 @@ DENSITY = 0.0008
 W_RANGE = (40, 100)
 H_RANGE = (40, 100)
 
-FPS_CAP = 120                  # display cap
-SOLVER_ITER = 60            # was 40
-DT_FIXED = 1.0 / 300.0      # was 1/240         # more iterations
+FPS_CAP = 120                 # display cap
+SOLVER_ITER = 60
+DT_FIXED = 1.0 / 300.0
 GLOBAL_DAMPING = 0.99
 SLEEP_THRESHOLD = 0.3
 
@@ -44,22 +44,25 @@ CLAW_RADIUS = 18
 CLAW_COLOR_IDLE = (180, 200, 255)
 CLAW_COLOR_GRAB = (255, 200, 60)
 
+# True-Collector mode tuning
+COLLECT_MAX_GRABS = 6
+COLLECT_RADIUS = 48.0
+COLLECT_COOLDOWN_MS = 80
+
 HAND_CONN = [
     (0,1),(1,2),(2,3),(3,4),          # thumb
     (0,5),(5,6),(6,7),(7,8),          # index
     (0,9),(9,10),(10,11),(11,12),     # middle
     (0,13),(13,14),(14,15),(15,16),   # ring
     (0,17),(17,18),(18,19),(19,20),   # pinky
-    (5,9),(9,13),(13,17)              # palm crossbars (optional)
+    (5,9),(9,13),(13,17)              # palm crossbars
 ]
-
-
 
 # Grabbing
 GRAB_MAX_DIST = 28
-GRAB_FORCE = 2.0e5          # was 7.5e4
-SPRING_K  = 8000.0          # was 2000
-SPRING_C  = 1200.0          # was 450
+GRAB_FORCE = 2.0e5
+SPRING_K  = 8000.0
+SPRING_C  = 1200.0
 
 # Camera panel
 CAM_MIRROR = True
@@ -70,27 +73,27 @@ CAM_POS = (12, 12)
 CAM_IDX = 0
 
 CAM_PAD = 12
-FLIP_HYSTERESIS = 24  # pixels to prevent flicker
+FLIP_HYSTERESIS = 24
 
 PAD = 40
 CEILING_Y = -200
 
-CAM_LEFT = True  # True = top-left, False = top-right
+CAM_LEFT = True
 
-# Input cropping: percent of camera frame ignored on each side
-EDGE_MARGIN_X = 0.15   # 0.10–0.20 works well
+# Input cropping
+EDGE_MARGIN_X = 0.15
 EDGE_MARGIN_Y = 0.10
 
 # Hand filtering and classification
-MAX_CLAW_SPEED = 3000.0     # was 2200
-MAX_CLAW_ACC   = 90000.0    # was 42000        # px/s^2 cap
-PINCH_CLOSE = 0.35
-PINCH_OPEN = 0.45
-HOLD_MISS_T = 0.08              # seconds to hold last valid hand
-MEDIAN_WIN = 5                  # frames
-OE_MINCUTOFF = .8               # One Euro position min cutoff
-OE_BETA = 0.05                  # One Euro speed coefficient
-OE_DCUTOFF = 1.0                # One Euro derivative cutoff
+MAX_CLAW_SPEED = 3000.0
+MAX_CLAW_ACC   = 90000.0
+PINCH_CLOSE = 0.25
+PINCH_OPEN = 0.35
+HOLD_MISS_T = 0.08
+MEDIAN_WIN = 5
+OE_MINCUTOFF = .8
+OE_BETA = 0.05
+OE_DCUTOFF = 1.0
 
 # --- Game states ---
 STATE_MENU = 0
@@ -107,7 +110,11 @@ DIFFICULTIES = [
 MENU_BTN_W = 360
 MENU_BTN_H = 90
 MENU_BTN_GAP = 24
-MENU_SELECT_COOLDOWN = 0.40  # seconds debounce after a pinch-select
+MENU_SELECT_COOLDOWN = 0.40
+
+# Toggle layout
+TOGGLE_W = 320
+TOGGLE_H = 56
 
 SND_CLICK = pygame.mixer.Sound(os.path.join("assets", "menu_click.ogg"))
 SND_CORRECT = pygame.mixer.Sound(os.path.join("assets", "correct.wav"))
@@ -178,12 +185,12 @@ def setup_mass_profile():
     W_RANGE = (wmin, wmax)
     H_RANGE = (hmin, hmax)
 
-    # Choose a target max mass for this run (kg)
+    # Choose a target max mass for this run
     M_max_run = random.uniform(6.0, 18.0)
 
     # Derive density so the largest possible block hits that max mass
     A_max = wmax * hmax
-    DENSITY = M_max_run / A_max  # kg per px^2
+    DENSITY = M_max_run / A_max
 
     # Compute implied average for HUD
     Ew = 0.5 * (wmin + wmax)
@@ -205,23 +212,21 @@ def _crop_map(n, lo, hi):
     hi = max(0.0, min(0.49, hi))
     span = 1.0 - lo - hi
     if span <= 1e-6:
-        return 0.5  # degenerate safety
+        return 0.5
     n = (n - lo) / span
     return 0.0 if n < 0.0 else 1.0 if n > 1.0 else n
 
 def trigger_color_flash(sim: "PhysicsSim", shape: pymunk.Shape, rgb: tuple[int,int,int], duration_ms: int = 300):
     now = pygame.time.get_ticks()
-    # Remember original color only the first time
     if shape not in sim._orig_color:
         sim._orig_color[shape] = shape.color
-    shape.color = (*rgb, 255)                # fill the whole block with this color
+    shape.color = (*rgb, 255)
     sim._flash_expire[shape] = now + duration_ms
 
 def update_color_flashes(sim: "PhysicsSim"):
     now = pygame.time.get_ticks()
     for shp, t_exp in list(sim._flash_expire.items()):
         if now >= t_exp:
-            # restore original color
             orig = sim._orig_color.get(shp)
             if orig is not None:
                 shp.color = orig
@@ -229,9 +234,8 @@ def update_color_flashes(sim: "PhysicsSim"):
 
 class HandTracker:
     """
-    MediaPipe hands -> screen coords + open/closed.
-    Jitter reduction: median over last N and One Euro filtering.
-    Hysteresis on pinch classification. Optional mirror.
+    MediaPipe hands -> screen coords + open or closed.
+    Jitter reduction: median and One Euro filtering.
     """
     def __init__(self, cam_index: int = 0):
         self.cap = cv2.VideoCapture(cam_index)
@@ -255,7 +259,7 @@ class HandTracker:
         self._euro_x = OneEuro(OE_MINCUTOFF, OE_BETA, OE_DCUTOFF)
         self._euro_y = OneEuro(OE_MINCUTOFF, OE_BETA, OE_DCUTOFF)
         self._closed_state = False
-        self._last_seen_t = 0.0  # seconds since last valid landmarks
+        self._last_seen_t = 0.0
 
     @staticmethod
     def _median(vals: deque) -> float:
@@ -293,7 +297,7 @@ class HandTracker:
             for idx, lm in enumerate(lms):
                 label = None
                 if hds and len(hds) > idx and getattr(hds[idx], "classification", None):
-                    label = hds[idx].classification[0].label  # 'Left' or 'Right'
+                    label = hds[idx].classification[0].label
 
                 xs = np.fromiter((p.x for p in lm.landmark), dtype=np.float32, count=21)
                 ys = np.fromiter((p.y for p in lm.landmark), dtype=np.float32, count=21)
@@ -303,18 +307,15 @@ class HandTracker:
                 cx_n = 0.5 * (x_min + x_max)
                 cy_n = 0.5 * (y_min + y_max)
 
-                # Draw bones
                 for a, b in HAND_CONN:
                     ax, ay = int(xs[a] * w), int(ys[a] * h)
                     bx, by = int(xs[b] * w), int(ys[b] * h)
                     cv2.line(rgb, (ax, ay), (bx, by), (80, 220, 255), 1, cv2.LINE_AA)
 
-                # Draw joints
                 for i in range(21):
                     jx, jy = int(xs[i] * w), int(ys[i] * h)
                     cv2.circle(rgb, (jx, jy), 2, (255, 230, 80), -1, cv2.LINE_AA)
 
-                # Bbox and label
                 x0, y0 = int(x_min * w), int(y_min * h)
                 x1, y1 = int(x_max * w), int(y_max * h)
                 cv2.rectangle(rgb, (x0, y0), (x1, y1), (255, 220, 80), 1, cv2.LINE_AA)
@@ -330,7 +331,6 @@ class HandTracker:
                     "label": label
                 })
 
-        # Choose control point (center of hand box; swap to fingertip if preferred)
         if self.last_pairs:
             cx_n = self.last_pairs[0]["cx"]
             cy_n = self.last_pairs[0]["cy"]
@@ -340,14 +340,11 @@ class HandTracker:
         cx_n = _crop_map(cx_n, EDGE_MARGIN_X, EDGE_MARGIN_X)
         cy_n = _crop_map(cy_n, EDGE_MARGIN_Y, EDGE_MARGIN_Y)
 
-        # Convert to screen coordinates
         cx = cx_n * SCREEN_W
         cy = max(0.0, min(cy_n * SCREEN_H, SCREEN_H * 0.92))
 
-        # Store overlay for the camera panel
         self.last_rgb = rgb
 
-        # Filtering
         self._median_x.append(cx)
         self._median_y.append(cy)
         mx = self._median(self._median_x)
@@ -355,7 +352,6 @@ class HandTracker:
         fx = self._euro_x.filter(mx, max(dt_frame, 1e-6))
         fy = self._euro_y.filter(my, max(dt_frame, 1e-6))
 
-        # Pinch ratio for open/closed using landmarks, no drawing utils
         ratio = None
         if self.last_pairs:
             lm0 = self.last_pairs[0]["lm"].landmark
@@ -409,19 +405,15 @@ class PhysicsSim:
         self._add_buckets()
 
         self.block_in_bucket: dict[pymunk.Shape, str | None] = {}
-        self._flash_expire: dict[pymunk.Shape, int] = {}  # shape -> expire_ms
-        self._orig_color: dict[pymunk.Shape, tuple[int, int, int, int]] = {}  # shape -> RGBA
+        self._flash_expire: dict[pymunk.Shape, int] = {}
+        self._orig_color: dict[pymunk.Shape, tuple[int, int, int, int]] = {}
 
     def _add_bounds(self):
         sb = self.space.static_body
         segs = [
-            # floor
             pymunk.Segment(sb, (PAD, FLOOR_Y), (SCREEN_W - PAD, FLOOR_Y), 6),
-            # left wall (extend to ceiling)
             pymunk.Segment(sb, (PAD, CEILING_Y), (PAD, FLOOR_Y), 6),
-            # right wall (extend to ceiling)
             pymunk.Segment(sb, (SCREEN_W - PAD, CEILING_Y), (SCREEN_W - PAD, FLOOR_Y), 6),
-            # ceiling (off-screen)
             pymunk.Segment(sb, (PAD, CEILING_Y), (SCREEN_W - PAD, CEILING_Y), 6),
         ]
         for s in segs:
@@ -450,26 +442,16 @@ class PhysicsSim:
         make_bucket(SCREEN_W - BUCKET_W - pad)
 
     def clear_all_dynamics(self):
-        """
-        Remove every DYNAMIC body (and their shapes/constraints) from the space.
-        Keeps static geometry (floor, walls, buckets) intact.
-        Also clears self.blocks to avoid stale references.
-        """
-        # 1) Remove constraints attached to any dynamic body
         dyn_bodies = {b for b in self.space.bodies if b.body_type == pymunk.Body.DYNAMIC}
         for c in list(self.space.constraints):
             if c.a in dyn_bodies or c.b in dyn_bodies:
                 self.space.remove(c)
-
-        # 2) Remove shapes belonging to dynamic bodies
         for b in list(dyn_bodies):
             for s in list(b.shapes):
                 if s in self.space.shapes:
                     self.space.remove(s)
             if b in self.space.bodies:
                 self.space.remove(b)
-
-        # 3) Reset our bookkeeping
         self.blocks = [s for s in self.blocks if s.body.body_type != pymunk.Body.DYNAMIC]
 
     def add_box(self, x, y, w, h):
@@ -480,11 +462,11 @@ class PhysicsSim:
         shape = pymunk.Poly.create_box(body, (w, h))
         shape.friction = 0.9
         shape.elasticity = 0.0
-        base = random.randint(0, 110)  # allows full black at the low end
+        base = random.randint(0, 110)
         shape.color = (
             base,
             base,
-            min(255, base + random.randint(20, 100)),  # blue accent
+            min(255, base + random.randint(20, 100)),
             255,
         )
         self.space.add(body, shape)
@@ -494,13 +476,10 @@ class PhysicsSim:
         return shape
 
     def clear_boxes(self):
-        # bodies to delete
         target_bodies = {s.body for s in self.blocks}
-        # remove constraints touching those bodies
         for c in list(self.space.constraints):
             if c.a in target_bodies or c.b in target_bodies:
                 self.space.remove(c)
-        # remove shapes and bodies
         for s in list(self.blocks):
             if s in self.space.shapes:
                 self.space.remove(s, s.body)
@@ -511,7 +490,8 @@ class PhysicsSim:
 class Claw:
     """
     Kinematic follower with filtered input and soft attachment.
-    Uses PivotJoint + DampedSpring to avoid chatter.
+    Default mode holds one block.
+    True-Collector mode can hold multiple True blocks simultaneously.
     """
     def __init__(self, space: pymunk.Space):
         self.space = space
@@ -521,28 +501,34 @@ class Claw:
         self.shape.sensor = True
         self.space.add(self.body, self.shape)
 
+        # single-hold fields for default mode
         self.holding_pivot: Optional[pymunk.PivotJoint] = None
         self.holding_spring: Optional[pymunk.DampedSpring] = None
         self.holding_shape: Optional[pymunk.Shape] = None
+
+        # multi-hold for collector mode
+        self.holding: list[tuple[pymunk.Shape, pymunk.PivotJoint, pymunk.DampedSpring]] = []
+        self.max_grabs = COLLECT_MAX_GRABS
+        self.collect_radius = COLLECT_RADIUS
+        self._next_collect_ms = 0
+
         self.prev_pos = self.body.position
         self.prev_vel = pymunk.Vec2d(0.0, 0.0)
 
+        self.collect_only_true = False
         self.state_closed = False
 
     def update(self, inp: ClawInput, dt: float):
         self.state_closed = bool(inp.present and inp.closed)
-        # compute desired velocity with caps
         new_pos = pymunk.Vec2d(inp.x, inp.y)
         raw_vel = (new_pos - self.prev_pos) / max(dt, 1e-6)
 
-        # acceleration cap
         dv = raw_vel - self.prev_vel
         max_dv = MAX_CLAW_ACC * dt
         if dv.length > max_dv:
             dv = dv.normalized() * max_dv
         vel = self.prev_vel + dv
 
-        # speed cap
         if vel.length > MAX_CLAW_SPEED:
             vel = vel.normalized() * MAX_CLAW_SPEED
 
@@ -551,10 +537,15 @@ class Claw:
         self.prev_pos = new_pos
         self.prev_vel = vel
 
-        if inp.present and inp.closed and not self.holding_pivot:
-            self.try_grab()
-        if (not inp.closed or not inp.present) and self.holding_pivot:
-            self.release()
+        # single-hold path
+        if not self.collect_only_true:
+            if inp.present and inp.closed and not self.holding_pivot:
+                self.try_grab()
+            if (not inp.closed or not inp.present) and self.holding_pivot:
+                self.release()
+        else:
+            if self.holding_pivot:
+                self.release()
 
     def try_grab(self):
         pq = self.space.point_query_nearest(self.body.position, GRAB_MAX_DIST, pymunk.ShapeFilter())
@@ -567,7 +558,6 @@ class Claw:
         pivot.error_bias = (1.0 - 0.25) ** 60
         pivot.max_bias = 900.0
 
-        # soft tether to damp oscillations
         spring = pymunk.DampedSpring(
             self.body, shp.body,
             (0, 0), (0, 0),
@@ -595,18 +585,68 @@ class Claw:
         self.holding_spring = None
         self.holding_shape = None
 
+    # --- Collector mode API ---
+    def collect_true(self, sim: "PhysicsSim", profile: dict, now_ms: int):
+        if now_ms < self._next_collect_ms:
+            return
+        self._next_collect_ms = now_ms + COLLECT_COOLDOWN_MS
+        if len(self.holding) >= self.max_grabs:
+            return
+
+        cx, cy = self.body.position
+        # naive range scan over dynamic blocks
+        for shp in sim.blocks:
+            if len(self.holding) >= self.max_grabs:
+                break
+            if shp.body.body_type != pymunk.Body.DYNAMIC:
+                continue
+            if any(shp is s for s, _, _ in self.holding):
+                continue
+            dx = float(shp.body.position.x) - float(cx)
+            dy = float(shp.body.position.y) - float(cy)
+            if dx*dx + dy*dy > self.collect_radius * self.collect_radius:
+                continue
+            # True criterion
+            if shp.body.mass < profile["avg_mass"]:
+                continue
+            pv = pymunk.PivotJoint(self.body, shp.body, self.body.position)
+            pv.max_force = GRAB_FORCE
+            pv.error_bias = (1.0 - 0.25) ** 60
+            pv.max_bias = 900.0
+            sp = pymunk.DampedSpring(self.body, shp.body, (0,0), (0,0), 0.0, SPRING_K, SPRING_C)
+            self.space.add(pv, sp)
+            self.holding.append((shp, pv, sp))
+
+    def release_all(self):
+        for shp, pv, sp in list(self.holding):
+            try:
+                self.space.remove(pv)
+            except Exception:
+                pass
+            try:
+                self.space.remove(sp)
+            except Exception:
+                pass
+        self.holding.clear()
+
+    def holding_any(self) -> bool:
+        return bool(self.holding_pivot or self.holding)
 
 
-def sorting_status(sim: PhysicsSim, profile) -> tuple[bool, float, int, int, int]:
+def sorting_status(sim: "PhysicsSim", profile: dict, *, true_only: bool = False) -> tuple[bool, float, int, int, int]:
     """
     Returns: all_in, pct_correct, correct, total, in_buckets
+    If true_only is True, only blocks with mass >= avg_mass are counted.
     """
     left, right = bucket_rects()
-    total = len(sim.blocks)
+
+    blocks = sim.blocks if not true_only else [s for s in sim.blocks if s.body.mass >= profile["avg_mass"]]
+
+    total = len(blocks)
     in_buckets = 0
     correct = 0
 
-    for shp in sim.blocks:
+    for shp in blocks:
         x, y = shp.body.position
         side = None
         if left.collidepoint(int(x), int(y)):
@@ -614,7 +654,7 @@ def sorting_status(sim: PhysicsSim, profile) -> tuple[bool, float, int, int, int
         elif right.collidepoint(int(x), int(y)):
             side = "F"
         else:
-            continue  # not parked in a bucket yet
+            continue  # not parked
 
         in_buckets += 1
         mass = shp.body.mass
@@ -625,6 +665,7 @@ def sorting_status(sim: PhysicsSim, profile) -> tuple[bool, float, int, int, int
     all_in = (in_buckets == total) and total > 0
     pct = (correct / total * 100.0) if total > 0 else 0.0
     return all_in, pct, correct, total, in_buckets
+
 
 # --- SPAWNING ---
 def spawn_blocks(sim, n: int):
@@ -644,7 +685,7 @@ def _fmt_ms(ms: int) -> str:
     m, s = divmod(s, 60)
     return f"{m:02d}:{s:02d}.{ms:03d}"
 
-def draw_menu(screen: pygame.Surface, font: pygame.font.Font, claw_pos: tuple[float, float], hover_idx: int | None):
+def draw_menu(screen: pygame.Surface, font: pygame.font.Font, claw_pos: tuple[float, float], hover_idx: int | None, toggle_rect: pygame.Rect, collect_true_mode: bool):
     title_font = pygame.font.SysFont("consolas", 48)
     title = title_font.render("Select Difficulty", True, (220, 220, 240))
     screen.blit(title, (SCREEN_W // 2 - title.get_width() // 2, 80))
@@ -652,15 +693,20 @@ def draw_menu(screen: pygame.Surface, font: pygame.font.Font, claw_pos: tuple[fl
     rects = menu_button_rects()
     for i, rect in enumerate(rects):
         name, count = DIFFICULTIES[i]
-        # base
         pygame.draw.rect(screen, (40, 40, 52), rect, border_radius=8)
         pygame.draw.rect(screen, (90, 90, 110), rect, width=2, border_radius=8)
-        # hover
         if hover_idx == i:
             pygame.draw.rect(screen, (120, 160, 255), rect, width=3, border_radius=8)
-        # label
         txt = font.render(f"{name}  ({count} blocks)", True, (230, 230, 235))
         screen.blit(txt, (rect.centerx - txt.get_width() // 2, rect.centery - txt.get_height() // 2))
+
+    # toggle
+    pygame.draw.rect(screen, (40, 40, 52), toggle_rect, border_radius=8)
+    pygame.draw.rect(screen, (90, 90, 110), toggle_rect, width=2, border_radius=8)
+    t = "Cerebra AI: ON" if collect_true_mode else "Cerebra AI: OFF"
+    col = (180,255,180) if collect_true_mode else (230,230,235)
+    t_surf = font.render(t, True, col)
+    screen.blit(t_surf, (toggle_rect.centerx - t_surf.get_width() // 2, toggle_rect.centery - t_surf.get_height() // 2))
 
     # draw claw marker on menu
     cx, cy = claw_pos
@@ -688,11 +734,18 @@ def draw_buckets(screen: pygame.Surface, profile):
 
 def draw_claw(screen: pygame.Surface, claw: Claw):
     x, y = claw.body.position
-    engaged = claw.holding_pivot or claw.state_closed
+    engaged = claw.holding_any() or claw.state_closed
     color = CLAW_COLOR_GRAB if engaged else CLAW_COLOR_IDLE
     pygame.draw.line(screen, (90, 90, 120), (int(x), 0), (int(x), int(y - CLAW_RADIUS)), 2)
     pygame.draw.circle(screen, color, (int(x), int(y)), CLAW_RADIUS, 2)
 
+def draw_collect_count(screen: pygame.Surface, font: pygame.font.Font, claw: Claw):
+    if not claw.holding:
+        return
+    bx, by = claw.body.position
+    n = len(claw.holding)
+    label = font.render(f"x{n}", True, (180, 255, 180))
+    screen.blit(label, (int(bx) + 26, int(by) - 64))
 
 def draw_weight(screen: pygame.Surface, font: pygame.font.Font, claw: Claw):
     if not claw.holding_shape:
@@ -725,7 +778,6 @@ def reset_sim(sim: PhysicsSim, initial_count: int):
         f"[run] density={profile['density']:.6f}  avg≈{profile['avg_mass']:.2f} kg  max={profile['max_mass']:.2f} kg  "
         f"W∈{profile['w_range']} H∈{profile['h_range']}")
     spawn_blocks(sim, initial_count)
-
     return profile
 
 def menu_update_selection(claw_input, last_select_time, now_time) -> tuple[int | None, int | None, float]:
@@ -753,7 +805,7 @@ def main():
     class WaveSpawner:
         """
         Spawns total_count blocks in bursts of batch_size every interval_ms.
-        Call .update(now_ms, sim) each frame; it returns how many were spawned.
+        Call .update(now_ms, sim) each frame.
         """
         def __init__(self, total_count: int, batch_size: int = 4, interval_ms: int = 120):
             self.total = int(total_count)
@@ -797,23 +849,36 @@ def main():
     DIFFICULTIES = [("Easy", 8), ("Medium", 16), ("Hard", 28)]
 
     state = STATE_MENU
-    menu_last_select_t = 0.0  # pinch-select debounce
+    menu_last_select_t = 0.0
     current_difficulty_name = None
     current_initial_count = None
+
+    # True-Collector toggle
+    collect_true_mode = False
 
     # waves
     active_waves: list[WaveSpawner] = []
 
-    # mass profile (replaced on selection/reset)
+    # mass profile
     profile = setup_mass_profile()
 
-    # --- timer ---
+    # timer
     timer_running = False
     timer_start_ms = 0
     final_time_ms = None
 
-    # --- physics stepping ---
-    acc = 0.0  # fixed-step accumulator
+    # physics stepping
+    acc = 0.0
+
+    # precompute toggle rect under the difficulty buttons
+    rects = menu_button_rects()
+    lowest = rects[-1]
+    toggle_rect = pygame.Rect(
+        (SCREEN_W - TOGGLE_W) // 2,
+        lowest.bottom + 2 * MENU_BTN_GAP,
+        TOGGLE_W,
+        TOGGLE_H
+    )
 
     running = True
     while running:
@@ -830,9 +895,9 @@ def main():
                 if e.key == pygame.K_ESCAPE:
                     running = False
 
-                # back to menu (for testing)
                 elif e.key == pygame.K_m:
                     claw.release()
+                    claw.release_all()
                     sim.clear_all_dynamics()
                     active_waves.clear()
                     state = STATE_MENU
@@ -841,9 +906,7 @@ def main():
                     timer_running = False
                     final_time_ms = None
 
-                # gameplay-only keys
                 elif state == STATE_PLAY and e.key == pygame.K_SPACE:
-                    # add an extra wave equal to the difficulty’s initial count
                     if current_initial_count is None:
                         current_initial_count = 8
                     w = WaveSpawner(total_count=current_initial_count, batch_size=4, interval_ms=120)
@@ -851,23 +914,22 @@ def main():
                     active_waves.append(w)
 
                 elif state == STATE_PLAY and e.key == pygame.K_c:
-                    # clear all blocks and cancel pending waves
                     claw.release()
+                    claw.release_all()
                     sim.clear_all_dynamics()
                     active_waves.clear()
 
                 elif state == STATE_PLAY and e.key == pygame.K_r:
-                    # reset mass profile and spawn a fresh wave for current difficulty
                     if current_initial_count is None:
                         current_initial_count = 8
                     claw.release()
+                    claw.release_all()
                     sim.clear_all_dynamics()
                     profile = setup_mass_profile()
                     active_waves.clear()
                     w = WaveSpawner(total_count=current_initial_count, batch_size=4, interval_ms=120)
                     w.start(now_ms)
                     active_waves.append(w)
-                    # reset timer
                     timer_running = True
                     timer_start_ms = now_ms
                     final_time_ms = None
@@ -879,18 +941,26 @@ def main():
         # STATE: MENU
         # ----------------------
         if state == STATE_MENU:
-            # move visual claw cursor (no physics in menu)
             claw.prev_pos = claw.body.position
             claw.body.position = (inp.x, inp.y)
             claw.prev_vel = pymunk.Vec2d(0, 0)
 
-            # selection via pinch
+            # toggle interaction
+            if inp.present and inp.closed and point_in_rect(inp.x, inp.y, toggle_rect):
+                if now_sec - menu_last_select_t >= MENU_SELECT_COOLDOWN:
+                    collect_true_mode = not collect_true_mode
+                    SND_CLICK.play()
+                    menu_last_select_t = now_sec
+
+
+            # difficulty selection
             hover_idx, chosen_idx, menu_last_select_t = menu_update_selection(inp, menu_last_select_t, now_sec)
+            claw.collect_only_true = collect_true_mode
 
             # draw menu scene
             screen.fill(BG_COLOR)
-            draw_camera_panel(screen, tracker, (12, 12))   # fixed corner to avoid overlap
-            draw_menu(screen, font, claw.body.position, hover_idx)
+            draw_camera_panel(screen, tracker, (12, 12))
+            draw_menu(screen, font, claw.body.position, hover_idx, toggle_rect, collect_true_mode)
             pygame.display.flip()
 
             # on pick: set difficulty, reset run, and start initial wave
@@ -901,6 +971,7 @@ def main():
                 current_initial_count = initial_count
 
                 claw.release()
+                claw.release_all()
                 sim.clear_all_dynamics()
                 profile = setup_mass_profile()
 
@@ -913,6 +984,7 @@ def main():
                 timer_start_ms = now_ms
                 final_time_ms = None
 
+
                 state = STATE_PLAY
             continue  # next frame
 
@@ -920,19 +992,23 @@ def main():
         # STATE: PLAY
         # ----------------------
 
-        # optional: update temporary spawn grace if implemented
         if hasattr(sim, "update_spawn_grace"):
             sim.update_spawn_grace(now_ms)
 
-        # advance all active waves; remove finished ones
         if active_waves:
             for w in list(active_waves):
                 w.update(now_ms, sim)
                 if w.done:
                     active_waves.remove(w)
 
-        # claw + physics
+        # update claw kinematics
         claw.update(inp, max(dt_frame, 1e-6))
+
+        # collector vacuuming when closed
+        if collect_true_mode and inp.present and inp.closed:
+            claw.collect_true(sim, profile, now_ms)
+
+        # physics fixed step
         while acc >= DT_FIXED:
             sim.space.step(DT_FIXED)
             acc -= DT_FIXED
@@ -941,11 +1017,9 @@ def main():
 
         global CAM_LEFT
         if CAM_LEFT:
-            # left panel spans x in [CAM_PAD, CAM_PAD + CAM_W]
             if cx <= CAM_PAD + CAM_W + FLIP_HYSTERESIS:
                 CAM_LEFT = False
         else:
-            # right panel spans x in [SCREEN_W - CAM_PAD - CAM_W, SCREEN_W - CAM_PAD]
             if cx >= SCREEN_W - CAM_PAD - CAM_W - FLIP_HYSTERESIS:
                 CAM_LEFT = True
 
@@ -955,11 +1029,17 @@ def main():
         update_color_flashes(sim)
 
         left, right = bucket_rects()
+
+        # auto-dump held True blocks when claw is over the True bucket
+        if collect_true_mode and claw.holding:
+            bx, by = claw.body.position
+            if left.collidepoint(int(bx), int(by)):
+                claw.release_all()
+
         for shp in list(sim.blocks):
             x, y = shp.body.position
             prev_state = sim.block_in_bucket.get(shp)
 
-            # Which bucket (if any) is the center in?
             new_state = None
             if left.collidepoint(int(x), int(y)):
                 new_state = "T"
@@ -971,17 +1051,17 @@ def main():
                 mass = shp.body.mass
                 should = "F" if mass < profile["avg_mass"] else "T"
                 if new_state == should:
-                    trigger_color_flash(sim, shp, (60, 250, 90))  # GREEN fill
+                    trigger_color_flash(sim, shp, (60, 250, 90))
                     SND_CORRECT.play()
                 else:
-                    trigger_color_flash(sim, shp, (230, 60, 60))  # RED fill
+                    trigger_color_flash(sim, shp, (230, 60, 60))
                     SND_INCORRECT.play()
 
             elif new_state is None and prev_state is not None:
                 sim.block_in_bucket[shp] = None
 
         # scoring and timer stop condition
-        all_in, pct, correct, total, in_buckets = sorting_status(sim, profile)
+        all_in, pct, correct, total, in_buckets = sorting_status(sim, profile, true_only=collect_true_mode)
         if timer_running and all_in:
             final_time_ms = pygame.time.get_ticks() - timer_start_ms
             timer_running = False
@@ -990,21 +1070,26 @@ def main():
         screen.fill(BG_COLOR)
         pygame.draw.rect(screen, (28, 28, 32), (0, FLOOR_Y, SCREEN_W, SCREEN_H - FLOOR_Y))
         sim.space.debug_draw(draw_opts)
-        draw_buckets(screen, profile)         # if your draw_buckets expects profile
+        draw_buckets(screen, profile)
         draw_claw(screen, claw)
+        draw_collect_count(screen, font, claw)
         draw_weight(screen, font, claw)
-        draw_camera_panel(screen, tracker, (cam_x, cam_y))  # or your dynamic placement
+        draw_camera_panel(screen, tracker, (cam_x, cam_y))
 
-        # banner: progress or final score
-        line = (f"Sorted correctly: {pct:.0f}%  ({correct}/{total})" if all_in
-                else f"In buckets: {in_buckets}/{total}")
+        # banner
+        if collect_true_mode:
+            line = (f"True placed: {pct:.0f}%  ({correct}/{total})" if all_in
+                    else f"True in buckets: {in_buckets}/{total}")
+        else:
+            line = (f"Sorted correctly: {pct:.0f}%  ({correct}/{total})" if all_in
+                    else f"In buckets: {in_buckets}/{total}")
         score_col = (190, 255, 190) if all_in else (180, 180, 190)
         score_surf = score_font.render(line, True, score_col)
         score_x = SCREEN_W // 2 - score_surf.get_width() // 2
         score_y = 16
         screen.blit(score_surf, (score_x, score_y))
 
-        # timer just below the score/progress
+        # timer just below the banner
         elapsed_ms = (final_time_ms if final_time_ms is not None else (now_ms - timer_start_ms)) if (timer_running or final_time_ms is not None) else 0
         timer_text = f"time { _fmt_ms(int(elapsed_ms)) }"
         timer_surf = font.render(timer_text, True, (200, 200, 210))
@@ -1012,7 +1097,7 @@ def main():
         timer_y = score_y + score_surf.get_height() + 6
         screen.blit(timer_surf, (timer_x, timer_y))
 
-        # fps HUD (optional)
+        # fps HUD
         fps_txt = font.render(f"fps {clock.get_fps():5.1f}", True, (200, 200, 210))
         screen.blit(fps_txt, (12, SCREEN_H - 28))
 
@@ -1023,3 +1108,5 @@ def main():
     pygame.quit()
 
 
+if __name__ == "__main__":
+    main()
