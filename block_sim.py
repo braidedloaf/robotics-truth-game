@@ -834,7 +834,7 @@ def main():
 
     # --- init ---
     screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
-    pygame.display.set_caption("Blocks + Buckets + Camera Claw")
+    pygame.display.set_caption("Robotics Demo")
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("consolas", 22)
     score_font = pygame.font.SysFont("consolas", 28)
