@@ -29,7 +29,7 @@ DENSITY = 0.0008
 W_RANGE = (40, 100)
 H_RANGE = (40, 100)
 
-FPS_CAP = 120                 # display cap
+FPS_CAP = 30                 # display cap
 SOLVER_ITER = 60
 DT_FIXED = 1.0 / 300.0
 GLOBAL_DAMPING = 0.99
@@ -87,17 +87,13 @@ EDGE_MARGIN_Y = 0.10
 # Hand filtering and classification
 MAX_CLAW_SPEED = 3000.0
 MAX_CLAW_ACC   = 90000.0
-PINCH_CLOSE = 0.25
-PINCH_OPEN = 0.35
+PINCH_CLOSE = 0.35
+PINCH_OPEN = 0.45
 HOLD_MISS_T = 0.08
 MEDIAN_WIN = 5
 OE_MINCUTOFF = .8
 OE_BETA = 0.05
 OE_DCUTOFF = 1.0
-
-# --- Game states ---
-STATE_MENU = 0
-STATE_PLAY = 1
 
 # --- Difficulties -> initial spawn counts ---
 DIFFICULTIES = [
@@ -177,7 +173,6 @@ def point_in_rect(px: float, py: float, r: pygame.Rect) -> bool:
 def setup_mass_profile():
     global DENSITY, W_RANGE, H_RANGE
 
-    # Randomize size ranges each run
     wmin = random.randint(36, 64)
     wmax = random.randint(96, 140)
     hmin = random.randint(36, 64)
@@ -185,23 +180,22 @@ def setup_mass_profile():
     W_RANGE = (wmin, wmax)
     H_RANGE = (hmin, hmax)
 
-    # Choose a target max mass for this run
+    # target max mass and implied density
     M_max_run = random.uniform(6.0, 18.0)
-
-    # Derive density so the largest possible block hits that max mass
     A_max = wmax * hmax
     DENSITY = M_max_run / A_max
 
-    # Compute implied average for HUD
     Ew = 0.5 * (wmin + wmax)
     Eh = 0.5 * (hmin + hmax)
     E_area = Ew * Eh
     E_mass = DENSITY * E_area
+
     return {
         "w_range": W_RANGE, "h_range": H_RANGE,
-        "max_mass": M_max_run, "avg_mass": E_mass,
-        "density": DENSITY
+        "max_mass": M_max_run, "avg_mass": E_mass, "density": DENSITY
     }
+
+
 
 def _crop_map(n, lo, hi):
     """
@@ -408,6 +402,9 @@ class PhysicsSim:
         self._flash_expire: dict[pymunk.Shape, int] = {}
         self._orig_color: dict[pymunk.Shape, tuple[int, int, int, int]] = {}
 
+        self._despawn_at: dict[pymunk.Shape, int] = {}
+
+
     def _add_bounds(self):
         sb = self.space.static_body
         segs = [
@@ -453,6 +450,36 @@ class PhysicsSim:
             if b in self.space.bodies:
                 self.space.remove(b)
         self.blocks = [s for s in self.blocks if s.body.body_type != pymunk.Body.DYNAMIC]
+
+    def remove_block(self, shp: pymunk.Shape):
+        """Remove a single dynamic block and associated data from the space."""
+        if shp not in self.blocks:
+            return
+        body = shp.body
+
+        # Remove any constraints attached to this body
+        for c in list(self.space.constraints):
+            if c.a is body or c.b is body:
+                self.space.remove(c)
+
+        # Remove shape and body from the space
+        if shp in self.space.shapes:
+            try:
+                self.space.remove(shp, body)
+            except Exception:
+                # fallback in case body already gone
+                try:
+                    self.space.remove(shp)
+                except Exception:
+                    pass
+
+        # Bookkeeping
+        if shp in self.blocks:
+            self.blocks.remove(shp)
+        self.block_in_bucket.pop(shp, None)
+        self._flash_expire.pop(shp, None)
+        self._orig_color.pop(shp, None)
+        self._despawn_at.pop(shp, None)
 
     def add_box(self, x, y, w, h):
         mass = DENSITY * w * h
@@ -1028,6 +1055,13 @@ def main():
 
         update_color_flashes(sim)
 
+        # --- timed despawn of correctly placed blocks ---
+        now = pygame.time.get_ticks()
+        for shp, t_exp in list(sim._despawn_at.items()):
+            if now >= t_exp:
+                sim.remove_block(shp)
+
+
         left, right = bucket_rects()
 
         # auto-dump held True blocks when claw is over the True bucket
@@ -1051,8 +1085,11 @@ def main():
                 mass = shp.body.mass
                 should = "F" if mass < profile["avg_mass"] else "T"
                 if new_state == should:
-                    trigger_color_flash(sim, shp, (60, 250, 90))
+                    trigger_color_flash(sim, shp, (60, 250, 90))  # GREEN fill
                     SND_CORRECT.play()
+                    # NEW: schedule despawn shortly after the flash
+                    sim._despawn_at[shp] = pygame.time.get_ticks() + 1000
+
                 else:
                     trigger_color_flash(sim, shp, (230, 60, 60))
                     SND_INCORRECT.play()
